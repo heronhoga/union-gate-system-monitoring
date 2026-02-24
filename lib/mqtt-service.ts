@@ -20,7 +20,7 @@ class MQTTService {
   private client: MqttClient | null = null;
   private messageHandlers: Map<string, MessageHandler[]> = new Map();
   private connectionHandlers: ConnectionHandler[] = [];
-  private brokerUrl = 'ws://broker.emqx.io:8083/mqtt';
+  private brokerUrl = 'wss://broker.emqx.io:8084/mqtt';
 
   /**
    * Connect to MQTT broker
