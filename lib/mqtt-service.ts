@@ -13,12 +13,34 @@ export interface DeviceData {
   ram_total_mb: number;
 }
 
+export interface RfidEvent {
+  type: 'rfid';
+  device: string;
+  card_hash: string;
+  code: string;
+  success: boolean;
+  timestamp: number;
+}
+
+export interface QrEvent {
+  type: 'qr';
+  device: string;
+  qr_hash: string;
+  code: string;
+  success: boolean;
+  timestamp: number;
+}
+
+
 export type MessageHandler = (data: DeviceData) => void;
+export type RfidEventHandler = (data: RfidEvent) => void;
+export type QrEventHandler = (data: QrEvent) => void;
 export type ConnectionHandler = (connected: boolean) => void;
 
 class MQTTService {
   private client: MqttClient | null = null;
   private messageHandlers: Map<string, MessageHandler[]> = new Map();
+  private rawMessageHandlers: Map<string, ((raw: string) => void)[]> = new Map();
   private connectionHandlers: ConnectionHandler[] = [];
   private brokerUrl = 'ws://broker.emqx.io:8083/mqtt';
 
@@ -114,6 +136,54 @@ class MQTTService {
   }
 
   /**
+   * Subscribe to a topic with a raw string handler (for custom event types like RFID)
+   */
+  subscribeRaw(topic: string, handler: (raw: string) => void): void {
+    if (!this.client) {
+      console.warn('[MQTT] Client not connected, cannot subscribe');
+      return;
+    }
+
+    if (!this.rawMessageHandlers.has(topic)) {
+      this.rawMessageHandlers.set(topic, []);
+      this.client.subscribe(topic, (error) => {
+        if (error) {
+          console.error(`[MQTT] Failed to subscribe (raw) to ${topic}:`, error);
+        } else {
+          console.log(`[MQTT] Subscribed (raw) to ${topic}`);
+        }
+      });
+    }
+
+    const handlers = this.rawMessageHandlers.get(topic)!;
+    if (!handlers.includes(handler)) {
+      handlers.push(handler);
+    }
+  }
+
+  /**
+   * Unsubscribe raw handler from a topic
+   */
+  unsubscribeRaw(topic: string, handler?: (raw: string) => void): void {
+    if (!this.client) return;
+
+    if (handler) {
+      const handlers = this.rawMessageHandlers.get(topic);
+      if (handlers) {
+        const index = handlers.indexOf(handler);
+        if (index > -1) handlers.splice(index, 1);
+        if (handlers.length === 0) {
+          this.rawMessageHandlers.delete(topic);
+          this.client.unsubscribe(topic);
+        }
+      }
+    } else {
+      this.rawMessageHandlers.delete(topic);
+      this.client.unsubscribe(topic);
+    }
+  }
+
+  /**
    * Register a connection state handler
    */
   onConnectionChange(handler: ConnectionHandler): () => void {
@@ -149,10 +219,23 @@ class MQTTService {
    * Handle incoming messages
    */
   private handleMessage(topic: string, payload: Buffer): void {
-    try {
-      const message = payload.toString('utf-8');
-      const data = JSON.parse(message) as DeviceData;
+    const message = payload.toString('utf-8');
 
+    // Kirim ke raw handlers (contoh: RFID event)
+    const rawHandlers = this.rawMessageHandlers.get(topic);
+    if (rawHandlers) {
+      rawHandlers.forEach((handler) => {
+        try {
+          handler(message);
+        } catch (error) {
+          console.error('[MQTT] Error in raw message handler:', error);
+        }
+      });
+    }
+
+    // Kirim ke typed DeviceData handlers
+    try {
+      const data = JSON.parse(message) as DeviceData;
       const handlers = this.messageHandlers.get(topic);
       if (handlers) {
         handlers.forEach((handler) => {
