@@ -13,15 +13,39 @@ import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { AlertCircle, Wifi, WifiOff, Cpu, BarChart3 } from "lucide-react";
 import { mqttService, DeviceData } from "@/lib/mqtt-service";
+import { Check, ChevronsUpDown } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+} from "@/components/ui/command";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import { cn } from "@/lib/utils";
 
 export default function Dashboard() {
   const [deviceData, setDeviceData] = useState<DeviceData | null>(null);
-  const [isConnected, setIsConnected] = useState(false);
   const [isConnecting, setIsConnecting] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // MQTT topic to subscribe to
-  const MQTT_TOPIC = "uniongate/BAGT2212111400001/status";
+  // GATE SELECTION
+  const [open, setOpen] = useState(false);
+  const GATE_OPTIONS = [
+    { label: "Punceling Gate In 1", value: "BAGT2212111400001" },
+    { label: "BAGT2212111400002", value: "BAGT2212111400002" },
+    { label: "BAGT2212111500003", value: "BAGT2212111500003" },
+  ];
+
+  const [selectedDevice, setSelectedDevice] = useState(GATE_OPTIONS[0].value);
+  // END GATE SELECTION
+
+  const MQTT_TOPIC = `uniongate/${selectedDevice}/status`;
 
   useEffect(() => {
     let unsubscribeConnection: (() => void) | null = null;
@@ -30,19 +54,14 @@ export default function Dashboard() {
       try {
         setIsConnecting(true);
         setError(null);
+        setDeviceData(null);
 
-        // Connect to MQTT broker
         await mqttService.connect();
 
-        // Register connection state handler
         unsubscribeConnection = mqttService.onConnectionChange((connected) => {
-          setIsConnected(connected);
-          if (connected) {
-            setError(null);
-          }
+          if (connected) setError(null);
         });
 
-        // Subscribe to topic
         mqttService.subscribe(MQTT_TOPIC, (data: DeviceData) => {
           console.log("[Dashboard] Received data:", data);
           setDeviceData(data);
@@ -54,7 +73,6 @@ export default function Dashboard() {
           err instanceof Error
             ? err.message
             : "Failed to connect to MQTT broker";
-        console.error("[Dashboard] Connection error:", err);
         setError(errorMessage);
         setIsConnecting(false);
       }
@@ -62,15 +80,11 @@ export default function Dashboard() {
 
     initializeConnection();
 
-    // Cleanup
     return () => {
-      if (unsubscribeConnection) {
-        unsubscribeConnection();
-      }
+      if (unsubscribeConnection) unsubscribeConnection();
       mqttService.unsubscribe(MQTT_TOPIC);
-      mqttService.disconnect();
     };
-  }, []);
+  }, [selectedDevice]);
 
   const formatTimestamp = (timestamp: number) => {
     return new Date(timestamp * 1000).toLocaleString();
@@ -87,6 +101,54 @@ export default function Dashboard() {
           <p className="text-gray-600">
             Real-time monitoring and location tracking
           </p>
+        </div>
+
+        <div className="mb-6 flex items-center gap-4">
+          <Popover open={open} onOpenChange={setOpen}>
+            <PopoverTrigger asChild>
+              <Button
+                variant="outline"
+                role="combobox"
+                aria-expanded={open}
+                className="w-full max-w-64 justify-between"
+              >
+                {selectedDevice
+                  ? GATE_OPTIONS.find((gate) => gate.value === selectedDevice)
+                      ?.label
+                  : "Select gate..."}
+                <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+              </Button>
+            </PopoverTrigger>
+
+            <PopoverContent className="w-full max-w-64 p-0">
+              <Command>
+                <CommandInput placeholder="Search gate..." />
+                <CommandEmpty>No gate found.</CommandEmpty>
+                <CommandGroup>
+                  {GATE_OPTIONS.map((gate) => (
+                    <CommandItem
+                      key={gate.value}
+                      value={gate.value}
+                      onSelect={(currentValue) => {
+                        setSelectedDevice(currentValue);
+                        setOpen(false);
+                      }}
+                    >
+                      <Check
+                        className={cn(
+                          "mr-2 h-4 w-4",
+                          selectedDevice === gate.value
+                            ? "opacity-100"
+                            : "opacity-0",
+                        )}
+                      />
+                      {gate.label}
+                    </CommandItem>
+                  ))}
+                </CommandGroup>
+              </Command>
+            </PopoverContent>
+          </Popover>
         </div>
 
         {/* Connection Status */}

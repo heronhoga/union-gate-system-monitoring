@@ -10,6 +10,7 @@
   "dependencies": {
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "cmdk": "^1.1.1",
     "leaflet": "^1.9.4",
     "lucide-react": "^0.575.0",
     "mqtt": "^5.15.0",
