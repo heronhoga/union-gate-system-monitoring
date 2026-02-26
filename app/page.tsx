@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { DeviceMap } from "@/components/DeviceMap";
+import { EventLog, EventLogEntry } from "@/components/EventLog";
 import {
   Card,
   CardContent,
@@ -12,7 +13,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { AlertCircle, Wifi, WifiOff, Cpu, BarChart3 } from "lucide-react";
-import { mqttService, DeviceData } from "@/lib/mqtt-service";
+import { mqttService, DeviceData, QrEvent } from "@/lib/mqtt-service";
 import { Check, ChevronsUpDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -27,12 +28,18 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import { cn } from "@/lib/utils";
+import { cn, formatTimestamp } from "@/lib/utils";
+import { StatusLog, StatusLogEntry } from "@/components/StatusLog";
 
 export default function Dashboard() {
   const [deviceData, setDeviceData] = useState<DeviceData | null>(null);
   const [isConnecting, setIsConnecting] = useState(true);
+  const [isBrokerConnected, setIsBrokerConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  //logs
+  const [EventLogs, setEventLogs] = useState<EventLogEntry[]>([]);
+  const [StatusLogs, setStatusLogs] = useState<StatusLogEntry[]>([]);
 
   // GATE SELECTION
   const [open, setOpen] = useState(false);
@@ -45,7 +52,28 @@ export default function Dashboard() {
   const [selectedDevice, setSelectedDevice] = useState(GATE_OPTIONS[0].value);
   // END GATE SELECTION
 
-  const MQTT_TOPIC = `uniongate/${selectedDevice}/status`;
+  const addLog = useCallback(
+    (
+      level: EventLogEntry["level"],
+      message: string,
+      device?: string,
+      details?: string,
+    ) => {
+      const entry: EventLogEntry = {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        timestamp: new Date(),
+        level,
+        message,
+        device,
+        details,
+      };
+      setEventLogs((prev) => [...prev.slice(-199), entry]);
+    },
+    [],
+  );
+
+  const STATUS_TOPIC = `uniongate/${selectedDevice}/status`;
+  const EVENT_TOPIC = `uniongate/${selectedDevice}/events`;
 
   useEffect(() => {
     let unsubscribeConnection: (() => void) | null = null;
@@ -59,12 +87,73 @@ export default function Dashboard() {
         await mqttService.connect();
 
         unsubscribeConnection = mqttService.onConnectionChange((connected) => {
-          if (connected) setError(null);
+          if (connected) {
+            setError(null);
+          } else {
+            addLog("warning", "Koneksi ke broker terputus");
+          }
         });
 
-        mqttService.subscribe(MQTT_TOPIC, (data: DeviceData) => {
-          console.log("[Dashboard] Received data:", data);
+        // Subscribe ke topic status (untuk data device)
+        mqttService.subscribe(STATUS_TOPIC, (data: DeviceData) => {
+          console.log("[Dashboard] Received device data:", data);
           setDeviceData(data);
+
+          setStatusLogs((prev) => [
+            ...prev.slice(-199),
+            {
+              device: data.device,
+              timestamp: new Date(),
+              cpu_percent: data.cpu_percent,
+              ram_percent: data.ram_percent,
+              ram_used_mb: data.ram_used_mb,
+              ram_total_mb: data.ram_total_mb,
+            },
+          ]);
+        });
+
+        // Subscribe ke topic events untuk QR dan RFID
+        mqttService.subscribeRaw(EVENT_TOPIC, (raw) => {
+          try {
+            console.log("[Dashboard] Raw event received:", raw);
+            const ev = JSON.parse(raw);
+
+            // Handle QR events
+            if (ev.type === "qr") {
+              const qrEvent = ev as QrEvent;
+              console.log("[Dashboard] QR event:", qrEvent);
+              const shortHash = qrEvent.qr_hash?.slice(0, 8) ?? "-";
+
+              addLog(
+                qrEvent.success ? "success" : "error",
+                qrEvent.success
+                  ? `✅ QR DITERIMA — Hash: ${shortHash}...`
+                  : `🚫 QR DITOLAK — Hash: ${shortHash}...`,
+                qrEvent.device,
+                `Kode: ${qrEvent.code}`,
+              );
+            }
+            // Handle RFID events (untuk masa depan)
+            else if (ev.type === "rfid") {
+              console.log("[Dashboard] RFID event:", ev);
+              const shortHash = ev.card_hash?.slice(0, 8) ?? "-";
+
+              addLog(
+                ev.success ? "success" : "error",
+                ev.success
+                  ? `✅ RFID DITERIMA — Kartu: ${shortHash}...`
+                  : `🚫 RFID DITOLAK — Kartu: ${shortHash}...`,
+                ev.device,
+                `Kode: ${ev.code}`,
+              );
+            }
+            // Handle tipe event lain jika ada
+            else {
+              console.log("[Dashboard] Unknown event type:", ev.type, ev);
+            }
+          } catch (e) {
+            console.error("Failed to parse event:", e, "Raw data:", raw);
+          }
         });
 
         setIsConnecting(false);
@@ -75,6 +164,7 @@ export default function Dashboard() {
             : "Failed to connect to MQTT broker";
         setError(errorMessage);
         setIsConnecting(false);
+        addLog("error", `Gagal terhubung: ${errorMessage}`);
       }
     };
 
@@ -82,13 +172,10 @@ export default function Dashboard() {
 
     return () => {
       if (unsubscribeConnection) unsubscribeConnection();
-      mqttService.unsubscribe(MQTT_TOPIC);
+      mqttService.unsubscribe(STATUS_TOPIC);
+      mqttService.unsubscribeRaw(EVENT_TOPIC);
     };
-  }, [selectedDevice]);
-
-  const formatTimestamp = (timestamp: number) => {
-    return new Date(timestamp * 1000).toLocaleString();
-  };
+  }, [selectedDevice, addLog]);
 
   return (
     <div className="min-h-screen bg-linear-to-br from-gray-50 to-gray-100 p-4 md:p-8">
@@ -188,147 +275,171 @@ export default function Dashboard() {
         )}
 
         {deviceData ? (
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            {/* Map */}
-            <div className="lg:col-span-2">
-              <Card className="h-full">
-                <CardHeader>
-                  <CardTitle>Location Map</CardTitle>
-                  <CardDescription>
-                    Device position: {deviceData.latitude.toFixed(4)},{" "}
-                    {deviceData.longitude.toFixed(4)}
-                  </CardDescription>
-                </CardHeader>
-                <CardContent className="p-0">
-                  <div className="w-full h-96">
-                    <DeviceMap
-                      latitude={deviceData.latitude}
-                      longitude={deviceData.longitude}
-                      deviceName={deviceData.device}
-                      status={deviceData.status}
-                    />
-                  </div>
-                </CardContent>
-              </Card>
-            </div>
-
-            {/* Metrics Sidebar */}
-            <div className="flex flex-col gap-4">
-              {/* Device Info */}
-              <Card>
-                <CardHeader>
-                  <CardTitle className="text-lg">Device Info</CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <div>
-                    <p className="text-sm text-gray-600">Device ID</p>
-                    <p className="font-mono text-sm font-semibold text-gray-900">
-                      {deviceData.device}
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-sm text-gray-600">Status</p>
-                    <Badge
-                      className="mt-1"
-                      variant={
-                        deviceData.status === "online" ? "default" : "secondary"
-                      }
-                    >
-                      {deviceData.status === "online" ? "Online" : "Offline"}
-                    </Badge>
-                  </div>
-                  <div>
-                    <p className="text-sm text-gray-600">Last Update</p>
-                    <p className="text-xs text-gray-700 mt-1">
-                      {formatTimestamp(deviceData.timestamp)}
-                    </p>
-                  </div>
-                </CardContent>
-              </Card>
-
-              {/* CPU Metrics */}
-              <Card>
-                <CardHeader>
-                  <CardTitle className="text-lg flex items-center gap-2">
-                    <Cpu className="w-5 h-5" />
-                    CPU Usage
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between">
-                      <span className="text-2xl font-bold text-gray-900">
-                        {deviceData.cpu_percent.toFixed(2)}%
-                      </span>
-                    </div>
-                    <div className="w-full bg-gray-200 rounded-full h-2">
-                      <div
-                        className="bg-blue-600 h-2 rounded-full transition-all duration-300"
-                        style={{
-                          width: `${Math.min(deviceData.cpu_percent, 100)}%`,
-                        }}
+          <>
+            {/* Map + Sidebar Grid */}
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+              {/* Map */}
+              <div className="lg:col-span-2">
+                <Card className="h-full">
+                  <CardHeader>
+                    <CardTitle>Location Map</CardTitle>
+                    <CardDescription>
+                      Device position: {deviceData.latitude.toFixed(4)},{" "}
+                      {deviceData.longitude.toFixed(4)}
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="p-0">
+                    <div className="w-full h-96">
+                      <DeviceMap
+                        latitude={deviceData.latitude}
+                        longitude={deviceData.longitude}
+                        deviceName={deviceData.device}
+                        status={deviceData.status}
                       />
                     </div>
-                  </div>
-                </CardContent>
-              </Card>
+                  </CardContent>
+                </Card>
+              </div>
 
-              {/* RAM Metrics */}
-              <Card>
-                <CardHeader>
-                  <CardTitle className="text-lg flex items-center gap-2">
-                    <BarChart3 className="w-5 h-5" />
-                    RAM Usage
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                  <div>
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-sm text-gray-600">Used</span>
-                      <span className="text-lg font-bold text-gray-900">
-                        {deviceData.ram_percent.toFixed(2)}%
-                      </span>
+              {/* Metrics Sidebar */}
+              <div className="flex flex-col gap-4">
+                {/* Device Info */}
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="text-lg">Device Info</CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <div>
+                      <p className="text-sm text-gray-600">Device ID</p>
+                      <p className="font-mono text-sm font-semibold text-gray-900">
+                        {deviceData.device}
+                      </p>
                     </div>
-                    <div className="w-full bg-gray-200 rounded-full h-2">
-                      <div
-                        className="bg-green-600 h-2 rounded-full transition-all duration-300"
-                        style={{
-                          width: `${Math.min(deviceData.ram_percent, 100)}%`,
-                        }}
-                      />
+                    <div>
+                      <p className="text-sm text-gray-600">Status</p>
+                      <Badge
+                        className="mt-1"
+                        variant={
+                          deviceData.status === "online"
+                            ? "default"
+                            : "secondary"
+                        }
+                      >
+                        {deviceData.status === "online" ? "Online" : "Offline"}
+                      </Badge>
                     </div>
-                  </div>
-                  <div className="text-xs text-gray-600 space-y-1">
-                    <p>
-                      {deviceData.ram_used_mb.toFixed(2)} MB /{" "}
-                      {deviceData.ram_total_mb.toFixed(2)} MB
-                    </p>
-                  </div>
-                </CardContent>
-              </Card>
+                    <div>
+                      <p className="text-sm text-gray-600">Last Update</p>
+                      <p className="text-xs text-gray-700 mt-1">
+                        {formatTimestamp(deviceData.timestamp)}
+                      </p>
+                    </div>
+                  </CardContent>
+                </Card>
+
+                {/* CPU Metrics */}
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="text-lg flex items-center gap-2">
+                      <Cpu className="w-5 h-5" />
+                      CPU Usage
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-2xl font-bold text-gray-900">
+                          {deviceData.cpu_percent.toFixed(2)}%
+                        </span>
+                      </div>
+                      <div className="w-full bg-gray-200 rounded-full h-2">
+                        <div
+                          className="bg-blue-600 h-2 rounded-full transition-all duration-300"
+                          style={{
+                            width: `${Math.min(deviceData.cpu_percent, 100)}%`,
+                          }}
+                        />
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+
+                {/* RAM Metrics */}
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="text-lg flex items-center gap-2">
+                      <BarChart3 className="w-5 h-5" />
+                      RAM Usage
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-3">
+                    <div>
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-sm text-gray-600">Used</span>
+                        <span className="text-lg font-bold text-gray-900">
+                          {deviceData.ram_percent.toFixed(2)}%
+                        </span>
+                      </div>
+                      <div className="w-full bg-gray-200 rounded-full h-2">
+                        <div
+                          className="bg-green-600 h-2 rounded-full transition-all duration-300"
+                          style={{
+                            width: `${Math.min(deviceData.ram_percent, 100)}%`,
+                          }}
+                        />
+                      </div>
+                    </div>
+                    <div className="text-xs text-gray-600 space-y-1">
+                      <p>
+                        {deviceData.ram_used_mb.toFixed(2)} MB /{" "}
+                        {deviceData.ram_total_mb.toFixed(2)} MB
+                      </p>
+                    </div>
+                  </CardContent>
+                </Card>
+              </div>
             </div>
-          </div>
+
+            {/* System Log — di bawah map+sidebar */}
+            <div className="mt-6">
+              <EventLog logs={EventLogs} maxDisplayed={100} />
+            </div>
+
+            <div className="mt-6">
+              <StatusLog logs={StatusLogs} maxDisplayed={100} />
+            </div>
+          </>
         ) : isConnecting ? (
-          <Card>
-            <CardContent className="flex items-center justify-center py-12">
-              <div className="text-center">
-                <div className="w-12 h-12 border-4 border-blue-200 border-t-blue-600 rounded-full animate-spin mx-auto mb-4" />
-                <p className="text-gray-600">Connecting to MQTT broker...</p>
-              </div>
-            </CardContent>
-          </Card>
+          <div className="space-y-4">
+            <Card>
+              <CardContent className="flex items-center justify-center py-12">
+                <div className="text-center">
+                  <div className="w-12 h-12 border-4 border-blue-200 border-t-blue-600 rounded-full animate-spin mx-auto mb-4" />
+                  <p className="text-gray-600">Connecting to MQTT broker...</p>
+                </div>
+              </CardContent>
+            </Card>
+            {EventLogs.length > 0 && (
+              <EventLog logs={EventLogs} maxDisplayed={100} />
+            )}
+          </div>
         ) : (
-          <Card>
-            <CardContent className="flex items-center justify-center py-12">
-              <div className="text-center">
-                <AlertCircle className="w-12 h-12 text-yellow-600 mx-auto mb-4" />
-                <p className="text-gray-600">Waiting for device data</p>
-                <p className="text-sm text-gray-500 mt-2">
-                  Topic: {MQTT_TOPIC}
-                </p>
-              </div>
-            </CardContent>
-          </Card>
+          <div className="space-y-4">
+            <Card>
+              <CardContent className="flex items-center justify-center py-12">
+                <div className="text-center">
+                  <AlertCircle className="w-12 h-12 text-yellow-600 mx-auto mb-4" />
+                  <p className="text-gray-600">Waiting for device data</p>
+                  <p className="text-sm text-gray-500 mt-2">
+                    Topic: {STATUS_TOPIC}
+                  </p>
+                </div>
+              </CardContent>
+            </Card>
+            {EventLogs.length > 0 && (
+              <EventLog logs={EventLogs} maxDisplayed={100} />
+            )}
+          </div>
         )}
       </div>
     </div>
