@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { DeviceMap } from "@/components/DeviceMap";
-import { SystemLog, LogEntry } from "@/components/SystemLog";
+import { EventLog, EventLogEntry } from "@/components/EventLog";
 import {
   Card,
   CardContent,
@@ -28,13 +28,18 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import { cn } from "@/lib/utils";
+import { cn, formatTimestamp } from "@/lib/utils";
+import { StatusLog, StatusLogEntry } from "@/components/StatusLog";
 
 export default function Dashboard() {
   const [deviceData, setDeviceData] = useState<DeviceData | null>(null);
   const [isConnecting, setIsConnecting] = useState(true);
+  const [isBrokerConnected, setIsBrokerConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [logs, setLogs] = useState<LogEntry[]>([]);
+
+  //logs
+  const [EventLogs, setEventLogs] = useState<EventLogEntry[]>([]);
+  const [StatusLogs, setStatusLogs] = useState<StatusLogEntry[]>([]);
 
   // GATE SELECTION
   const [open, setOpen] = useState(false);
@@ -49,12 +54,12 @@ export default function Dashboard() {
 
   const addLog = useCallback(
     (
-      level: LogEntry["level"],
+      level: EventLogEntry["level"],
       message: string,
       device?: string,
-      details?: string
+      details?: string,
     ) => {
-      const entry: LogEntry = {
+      const entry: EventLogEntry = {
         id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
         timestamp: new Date(),
         level,
@@ -62,12 +67,12 @@ export default function Dashboard() {
         device,
         details,
       };
-      setLogs((prev) => [...prev.slice(-199), entry]);
+      setEventLogs((prev) => [...prev.slice(-199), entry]);
     },
-    []
+    [],
   );
 
-  const MQTT_TOPIC = `uniongate/${selectedDevice}/status`;
+  const STATUS_TOPIC = `uniongate/${selectedDevice}/status`;
   const EVENT_TOPIC = `uniongate/${selectedDevice}/events`;
 
   useEffect(() => {
@@ -90,9 +95,21 @@ export default function Dashboard() {
         });
 
         // Subscribe ke topic status (untuk data device)
-        mqttService.subscribe(MQTT_TOPIC, (data: DeviceData) => {
+        mqttService.subscribe(STATUS_TOPIC, (data: DeviceData) => {
           console.log("[Dashboard] Received device data:", data);
           setDeviceData(data);
+
+          setStatusLogs((prev) => [
+            ...prev.slice(-199),
+            {
+              device: data.device,
+              timestamp: new Date(),
+              cpu_percent: data.cpu_percent,
+              ram_percent: data.ram_percent,
+              ram_used_mb: data.ram_used_mb,
+              ram_total_mb: data.ram_total_mb,
+            },
+          ]);
         });
 
         // Subscribe ke topic events untuk QR dan RFID
@@ -113,7 +130,7 @@ export default function Dashboard() {
                   ? `✅ QR DITERIMA — Hash: ${shortHash}...`
                   : `🚫 QR DITOLAK — Hash: ${shortHash}...`,
                 qrEvent.device,
-                `Kode: ${qrEvent.code}`
+                `Kode: ${qrEvent.code}`,
               );
             }
             // Handle RFID events (untuk masa depan)
@@ -127,14 +144,13 @@ export default function Dashboard() {
                   ? `✅ RFID DITERIMA — Kartu: ${shortHash}...`
                   : `🚫 RFID DITOLAK — Kartu: ${shortHash}...`,
                 ev.device,
-                `Kode: ${ev.code}`
+                `Kode: ${ev.code}`,
               );
             }
             // Handle tipe event lain jika ada
             else {
               console.log("[Dashboard] Unknown event type:", ev.type, ev);
             }
-
           } catch (e) {
             console.error("Failed to parse event:", e, "Raw data:", raw);
           }
@@ -156,14 +172,10 @@ export default function Dashboard() {
 
     return () => {
       if (unsubscribeConnection) unsubscribeConnection();
-      mqttService.unsubscribe(MQTT_TOPIC);
+      mqttService.unsubscribe(STATUS_TOPIC);
       mqttService.unsubscribeRaw(EVENT_TOPIC);
     };
   }, [selectedDevice, addLog]);
-
-  const formatTimestamp = (timestamp: number) => {
-    return new Date(timestamp * 1000).toLocaleString();
-  };
 
   return (
     <div className="min-h-screen bg-linear-to-br from-gray-50 to-gray-100 p-4 md:p-8">
@@ -189,7 +201,7 @@ export default function Dashboard() {
               >
                 {selectedDevice
                   ? GATE_OPTIONS.find((gate) => gate.value === selectedDevice)
-                    ?.label
+                      ?.label
                   : "Select gate..."}
                 <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
               </Button>
@@ -308,7 +320,9 @@ export default function Dashboard() {
                       <Badge
                         className="mt-1"
                         variant={
-                          deviceData.status === "online" ? "default" : "secondary"
+                          deviceData.status === "online"
+                            ? "default"
+                            : "secondary"
                         }
                       >
                         {deviceData.status === "online" ? "Online" : "Offline"}
@@ -388,7 +402,11 @@ export default function Dashboard() {
 
             {/* System Log — di bawah map+sidebar */}
             <div className="mt-6">
-              <SystemLog logs={logs} maxDisplayed={100} />
+              <EventLog logs={EventLogs} maxDisplayed={100} />
+            </div>
+
+            <div className="mt-6">
+              <StatusLog logs={StatusLogs} maxDisplayed={100} />
             </div>
           </>
         ) : isConnecting ? (
@@ -401,7 +419,9 @@ export default function Dashboard() {
                 </div>
               </CardContent>
             </Card>
-            {logs.length > 0 && <SystemLog logs={logs} maxDisplayed={100} />}
+            {EventLogs.length > 0 && (
+              <EventLog logs={EventLogs} maxDisplayed={100} />
+            )}
           </div>
         ) : (
           <div className="space-y-4">
@@ -411,12 +431,14 @@ export default function Dashboard() {
                   <AlertCircle className="w-12 h-12 text-yellow-600 mx-auto mb-4" />
                   <p className="text-gray-600">Waiting for device data</p>
                   <p className="text-sm text-gray-500 mt-2">
-                    Topic: {MQTT_TOPIC}
+                    Topic: {STATUS_TOPIC}
                   </p>
                 </div>
               </CardContent>
             </Card>
-            {logs.length > 0 && <SystemLog logs={logs} maxDisplayed={100} />}
+            {EventLogs.length > 0 && (
+              <EventLog logs={EventLogs} maxDisplayed={100} />
+            )}
           </div>
         )}
       </div>

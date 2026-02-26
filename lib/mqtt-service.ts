@@ -42,7 +42,7 @@ class MQTTService {
   private messageHandlers: Map<string, MessageHandler[]> = new Map();
   private rawMessageHandlers: Map<string, ((raw: string) => void)[]> = new Map();
   private connectionHandlers: ConnectionHandler[] = [];
-  private brokerUrl = 'wss://broker.emqx.io:8084/mqtt';
+  private brokerUrl = process.env.NEXT_PUBLIC_MQTT_BROKER || 'mqtt://localhost:1883';
 
   /**
    * Connect to MQTT broker
