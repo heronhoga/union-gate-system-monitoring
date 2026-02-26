@@ -45,8 +45,6 @@ export default function Dashboard() {
   const [open, setOpen] = useState(false);
   const GATE_OPTIONS = [
     { label: "Punceling Gate In 1", value: "BAGT2212111400001" },
-    { label: "BAGT2212111400002", value: "BAGT2212111400002" },
-    { label: "BAGT2212111500003", value: "BAGT2212111500003" },
   ];
 
   const [selectedDevice, setSelectedDevice] = useState(GATE_OPTIONS[0].value);
@@ -207,7 +205,7 @@ export default function Dashboard() {
               </Button>
             </PopoverTrigger>
 
-            <PopoverContent className="w-full max-w-64 p-0">
+            <PopoverContent className="w-full max-w-64 p-0 z-[1000]">
               <Command>
                 <CommandInput placeholder="Search gate..." />
                 <CommandEmpty>No gate found.</CommandEmpty>
